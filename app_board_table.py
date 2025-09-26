@@ -412,7 +412,50 @@ with tab_rapport:
             if selection.empty:
                 st.info("Aucune ligne correspondante trouvée pour ce logiciel.")
             else:
-                st.markdown(f"### {selected_logiciel}")
+                version_choice_label = None
+                if version_col and version_col in selection.columns:
+                    version_series = selection[version_col]
+                    version_display = (
+                        version_series.fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .replace("", "Non renseignée")
+                    )
+                    unique_versions = sorted(version_display.unique())
+
+                    if len(unique_versions) > 1:
+                        version_options = ["Toutes versions"] + unique_versions
+                        version_choice_label = st.selectbox(
+                            "Choisir une version",
+                            version_options,
+                            key=f"version_{selected_logiciel}",
+                        )
+
+                        if version_choice_label == "Toutes versions":
+                            st.caption("Informations agrégées sur toutes les versions de ce logiciel.")
+                        elif version_choice_label == "Non renseignée":
+                            selection = selection[
+                                version_series.isna()
+                                | version_series.astype(str).str.strip().eq("")
+                            ]
+                            st.caption("Version sélectionnée : Non renseignée")
+                        else:
+                            selection = selection[version_display == version_choice_label]
+                            st.caption(f"Version sélectionnée : {version_choice_label}")
+                    elif len(unique_versions) == 1:
+                        version_choice_label = unique_versions[0]
+                        st.caption(f"Version disponible : {version_choice_label}")
+
+                if selection.empty:
+                    st.info("Aucune donnée disponible pour cette version.")
+                else:
+                    titre = selected_logiciel
+                    if version_choice_label and version_choice_label != "Toutes versions":
+                        titre = f"{selected_logiciel} – Version {version_choice_label}"
+                    elif version_choice_label == "Toutes versions":
+                        titre = f"{selected_logiciel} – Toutes versions"
+
+                    st.markdown(f"### {titre}")
 
                 info_mapping = [
                     ("Version", version_col),

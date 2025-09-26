@@ -3,6 +3,7 @@
 # Dépendances : pip install streamlit pandas openpyxl matplotlib
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 import pandas as pd
@@ -189,6 +190,64 @@ def _style_doc_matrix(df: pd.DataFrame, doc_cols: List[str], revision_cols: List
 
     return styler
 
+
+def _normalize_text(text: str) -> str:
+    """Supprime les accents et met en minuscules pour une comparaison robuste."""
+    if text is None:
+        return ""
+    normalized = unicodedata.normalize("NFKD", str(text))
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower().strip()
+
+
+def stats_referent(df: pd.DataFrame) -> pd.DataFrame:
+    """Compte les dossiers par référent et sépare En cours / À faire."""
+    if df.empty:
+        return pd.DataFrame(columns=["Référent", "À faire", "En cours", "Dossiers ouverts"])
+
+    referent_col = None
+    for col in df.columns:
+        if "referent" in _normalize_text(col):
+            referent_col = col
+            break
+    if referent_col is None:
+        raise ValueError("Aucune colonne référent détectée dans les données.")
+
+    status_col = None
+    for col in df.columns:
+        norm_col = _normalize_text(col)
+        if "action" in norm_col and "faire" in norm_col:
+            status_col = col
+            break
+    if status_col is None:
+        for col in df.columns:
+            if "avancement" in _normalize_text(col):
+                status_col = col
+                break
+
+    referents = df[referent_col].fillna("Non renseigné").astype(str).str.strip()
+    referents = referents.replace("", "Non renseigné")
+
+    if status_col is not None:
+        status_values = df[status_col].fillna("").apply(_normalize_text)
+    else:
+        status_values = pd.Series(["en cours"] * len(df), index=df.index)
+
+    statut = pd.Series("En cours", index=df.index)
+    statut.loc[status_values.str.contains("a faire", regex=False)] = "À faire"
+    statut.loc[status_values.str.contains("en cours", regex=False)] = "En cours"
+
+    stats = (
+        pd.crosstab(referents, statut)
+        .reindex(columns=["À faire", "En cours"], fill_value=0)
+        .rename_axis("Référent")
+        .reset_index()
+    )
+    stats["À faire"] = stats.get("À faire", 0)
+    stats["En cours"] = stats.get("En cours", 0)
+    stats["Dossiers ouverts"] = stats["À faire"] + stats["En cours"]
+    stats = stats.sort_values("Dossiers ouverts", ascending=False).reset_index(drop=True)
+    return stats
+
 def bar_plot(df: pd.DataFrame, x: str, y: str, title: str, ylim: Optional[Tuple[float, float]]=None):
     """Trace un histogramme (Matplotlib) avec abscisses textuelles et y commun optionnel."""
     fig, ax = plt.subplots()
@@ -264,13 +323,45 @@ c2.metric("Démarrés", k["Démarrés"])
 c3.metric("Finis", k["Finis"])
 c4.metric("En cours (démarrés non finis)", k["En cours (démarrés non finis)"])
 
-# Répartition par logiciel
-st.subheader("Répartition par logiciel")
-tab_logiciel = stats_par_logiciel(df, m, year)
-st.dataframe(tab_logiciel, use_container_width=True)
-st.download_button("⬇️ Export CSV – Répartition par logiciel",
-                   tab_logiciel.to_csv(index=False).encode("utf-8"),
-                   file_name=f"repartition_logiciel_{year}.csv")
+# Répartition par logiciel / référent
+tab_logiciels, tab_referents = st.tabs(["Logiciels", "Référents"])
+
+with tab_logiciels:
+    st.subheader("Répartition par logiciel")
+    tab_logiciel = stats_par_logiciel(df, m, year)
+    st.dataframe(tab_logiciel, use_container_width=True)
+    st.download_button(
+        "⬇️ Export CSV – Répartition par logiciel",
+        tab_logiciel.to_csv(index=False).encode("utf-8"),
+        file_name=f"repartition_logiciel_{year}.csv",
+    )
+
+with tab_referents:
+    st.subheader("Charge par référent")
+    try:
+        tab_ref = stats_referent(df)
+    except ValueError as exc:
+        st.info(str(exc))
+        tab_ref = pd.DataFrame(columns=["Référent", "À faire", "En cours", "Dossiers ouverts"])
+
+    if tab_ref.empty:
+        st.info("Aucune donnée référent disponible.")
+    else:
+        column_config = {
+            "Référent": st.column_config.TextColumn(
+                "Référent",
+                help="Consultez la colonne 'Commentaire/action' pour analyser les référents surchargés.",
+            ),
+            "À faire": st.column_config.NumberColumn("À faire"),
+            "En cours": st.column_config.NumberColumn("En cours"),
+            "Dossiers ouverts": st.column_config.NumberColumn(
+                "Dossiers ouverts",
+                help="Les référents avec beaucoup de dossiers ouverts doivent être suivis via 'Commentaire/action'.",
+            ),
+        }
+        st.dataframe(tab_ref, use_container_width=True, column_config=column_config)
+        chart_data = tab_ref.set_index("Référent")[["Dossiers ouverts"]]
+        st.bar_chart(chart_data, height=400, use_container_width=True, horizontal=True)
 
 st.divider()
 

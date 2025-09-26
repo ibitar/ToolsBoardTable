@@ -209,6 +209,31 @@ def _format_unique_values(series: pd.Series, max_items: int = 5) -> str:
     return ", ".join(values_list)
 
 
+def _clean_categorical_series(series: pd.Series, empty_label: str = "Non renseigné") -> pd.Series:
+    """Nettoie une série catégorielle (NaN, espaces) et remplace les vides par un libellé."""
+    if series is None:
+        return pd.Series(dtype="object")
+    cleaned = series.fillna(empty_label).astype(str).str.strip()
+    cleaned = cleaned.replace("", empty_label)
+    return cleaned
+
+
+def _distribution_counts(df: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
+    """Calcule la répartition d'un champ sous forme de tableau (valeur, nombre, part)."""
+    cleaned = _clean_categorical_series(df[column])
+    counts = (
+        cleaned.value_counts(dropna=False)
+        .rename_axis(label)
+        .reset_index(name="Nombre de logiciels")
+    )
+    total = counts["Nombre de logiciels"].sum()
+    if total:
+        counts["Part (%)"] = (counts["Nombre de logiciels"] / total * 100).round(1)
+    else:
+        counts["Part (%)"] = 0.0
+    return counts
+
+
 def stats_referent(df: pd.DataFrame) -> pd.DataFrame:
     """Compte les dossiers par référent et sépare En cours / À faire."""
     if df.empty:
@@ -325,6 +350,10 @@ st.success("Données chargées ✅")
 logiciel_col = m.get("logiciel")
 doc_cols = [col for col in DOC_STATUS_COLUMNS if col in df.columns]
 version_col = find_column_by_keywords(df, ["version", "logiciel"])
+editor_col = find_column_by_keywords(df, ["editeur"])
+type_col = find_column_by_keywords(df, ["type"])
+avancement_col = find_column_by_keywords(df, ["avancement"])
+metier_col = find_column_by_keywords(df, ["metier"])
 
 # Choix de l'année (auto-remplie depuis les colonnes dates)
 years = set()
@@ -403,8 +432,13 @@ c2.metric("Démarrés", k["Démarrés"])
 c3.metric("Finis", k["Finis"])
 c4.metric("En cours (démarrés non finis)", k["En cours (démarrés non finis)"])
 
-# Répartition par logiciel / référent / rapport détaillé
-tab_logiciels, tab_referents, tab_rapport = st.tabs(["Logiciels", "Référents", "Rapport logiciel"])
+# Répartition par logiciel / référent / statistiques / rapport détaillé
+tab_logiciels, tab_referents, tab_stats_generales, tab_rapport = st.tabs([
+    "Logiciels",
+    "Référents",
+    "Statistiques générales",
+    "Rapport logiciel",
+])
 
 with tab_logiciels:
     st.subheader("Répartition par logiciel")
@@ -442,6 +476,72 @@ with tab_referents:
         st.dataframe(tab_ref, use_container_width=True, column_config=column_config)
         chart_data = tab_ref.set_index("Référent")[["Dossiers ouverts"]]
         st.bar_chart(chart_data, height=400, use_container_width=True, horizontal=True)
+
+with tab_stats_generales:
+    st.subheader("Statistiques générales sur les logiciels")
+    st.caption(
+        "Analyse des logiciels indépendamment des dates d'ajout. Combinez des filtres par attribut pour"
+        " comprendre la répartition du portefeuille."
+    )
+
+    filter_candidates = [
+        ("Éditeur", editor_col),
+        ("Type", type_col),
+        ("État d'avancement", avancement_col),
+        ("Métier", metier_col),
+    ]
+    df_attr = df_filtered.copy()
+
+    with st.expander("Filtres attributaires"):
+        for label, col_name in filter_candidates:
+            if not col_name or col_name not in df_filtered.columns:
+                continue
+            options = sorted(_clean_categorical_series(df_filtered[col_name]).unique().tolist())
+            selection = st.multiselect(
+                f"Filtrer par {label.lower()}",
+                options,
+                placeholder=f"Tous les {label.lower()}s",
+                key=f"filter_{label}",
+            )
+            if selection:
+                cleaned_series = _clean_categorical_series(df_attr[col_name])
+                df_attr = df_attr[cleaned_series.isin(selection)]
+
+    if df_attr.empty:
+        st.warning("Aucune donnée ne correspond aux filtres sélectionnés.")
+    else:
+        total_lignes = len(df_attr)
+        total_logiciels = (
+            df_attr[logiciel_col].nunique() if logiciel_col and logiciel_col in df_attr.columns else total_lignes
+        )
+        metriques = st.columns(4)
+        metriques[0].metric("Lignes filtrées", total_lignes)
+        metriques[1].metric("Logiciels uniques", total_logiciels)
+        if editor_col and editor_col in df_attr.columns:
+            nb = _clean_categorical_series(df_attr[editor_col]).nunique()
+            metriques[2].metric("Éditeurs distincts", nb)
+        if type_col and type_col in df_attr.columns:
+            nb = _clean_categorical_series(df_attr[type_col]).nunique()
+            metriques[3].metric("Types distincts", nb)
+
+        dimension_options = [
+            ("Éditeur", editor_col),
+            ("Type", type_col),
+            ("État d'avancement", avancement_col),
+            ("Métier", metier_col),
+            ("Référent", referent_col),
+        ]
+        dimension_options = [(label, col) for label, col in dimension_options if col and col in df_attr.columns]
+
+        if not dimension_options:
+            st.info("Aucun champ catégoriel pertinent n'a été détecté pour établir des statistiques.")
+        else:
+            dim_labels = [label for label, _ in dimension_options]
+            selected_label = st.selectbox("Répartition à afficher", dim_labels)
+            selected_column = dict(dimension_options)[selected_label]
+            repartition = _distribution_counts(df_attr, selected_column, selected_label)
+            st.dataframe(repartition, use_container_width=True)
+            st.bar_chart(repartition, x=selected_label, y="Nombre de logiciels")
 
 with tab_rapport:
     st.subheader("Rapport détaillé par logiciel")

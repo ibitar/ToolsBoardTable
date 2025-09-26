@@ -27,6 +27,16 @@ PATTERNS = {
 # Abréviations FR des mois (indexés 1..12)
 MOIS_ABBR_FR = ["", "Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Aoû", "Sep", "Oct", "Nov", "Déc"]
 
+DOC_STATUS_COLUMNS = [
+    "etat de la notice de description",
+    "etat de la notice de validation",
+    "etat de la notice de vérification",
+    "etat du pv recettage",
+]
+REVISION_STALENESS_DAYS = 30
+STATUS_EMPTY_COLOR = "#ffcccc"
+REVISION_STALE_COLOR = "#ffe0b2"
+
 # ==========
 # 2) Utilitaires
 # ==========
@@ -117,6 +127,68 @@ def stats_mensuelles(df: pd.DataFrame, m: Dict[str, str], year: int, champ_key: 
     out["Libellé"] = out["Mois"].apply(lambda i: MOIS_ABBR_FR[i])
     return out  # colonnes: Mois, valeur_col, Libellé
 
+
+def doc_status_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Synthèse des statuts documentaires (OK / En attente / NaN)."""
+    lignes: List[Dict[str, int]] = []
+    for col in DOC_STATUS_COLUMNS:
+        if col not in df.columns:
+            continue
+        serie = df[col]
+        normalisee = (
+            serie.dropna()
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        lignes.append(
+            {
+                "Matrice": col,
+                "OK": int((normalisee == "ok").sum()),
+                "En attente": int((normalisee == "en attente").sum()),
+                "NaN": int(serie.isna().sum()),
+            }
+        )
+    return pd.DataFrame(lignes)
+
+
+def _style_doc_matrix(df: pd.DataFrame, doc_cols: List[str], revision_cols: List[str], delai_jours: int):
+    if not doc_cols and not revision_cols:
+        return df
+
+    matrice = df[doc_cols + revision_cols].copy()
+
+    for col in revision_cols:
+        matrice[col] = pd.to_datetime(matrice[col], errors="coerce")
+
+    styler = matrice.style
+
+    if doc_cols:
+        styler = styler.applymap(
+            lambda val: f"background-color: {STATUS_EMPTY_COLOR}" if pd.isna(val) or str(val).strip() == "" else "",
+            subset=doc_cols,
+        )
+
+    if revision_cols:
+        seuil = pd.Timestamp.now() - pd.Timedelta(days=delai_jours)
+        styler = styler.format(
+            {
+                col: (lambda v: v.strftime("%d/%m/%Y") if pd.notna(v) else "")
+                for col in revision_cols
+            }
+        )
+
+        def _couleur_revision(val):
+            if pd.isna(val):
+                return f"background-color: {STATUS_EMPTY_COLOR}"
+            if val < seuil:
+                return f"background-color: {REVISION_STALE_COLOR}"
+            return ""
+
+        styler = styler.applymap(_couleur_revision, subset=revision_cols)
+
+    return styler
+
 def bar_plot(df: pd.DataFrame, x: str, y: str, title: str, ylim: Optional[Tuple[float, float]]=None):
     """Trace un histogramme (Matplotlib) avec abscisses textuelles et y commun optionnel."""
     fig, ax = plt.subplots()
@@ -201,6 +273,45 @@ st.download_button("⬇️ Export CSV – Répartition par logiciel",
                    file_name=f"repartition_logiciel_{year}.csv")
 
 st.divider()
+
+# Suivi documentaire
+doc_cols = [col for col in DOC_STATUS_COLUMNS if col in df.columns]
+revision_cols = [
+    col
+    for col in df.columns
+    if col.startswith("derniere revision") or col.startswith("dernière revision")
+]
+
+with st.expander("Suivi documentaire"):
+    if not doc_cols and not revision_cols:
+        st.info("Aucune colonne documentaire détectée dans les données chargées.")
+    else:
+        synthese = doc_status_summary(df)
+        if not synthese.empty:
+            st.markdown("**Synthèse des statuts**")
+            st.dataframe(synthese, use_container_width=True)
+
+        if doc_cols:
+            st.markdown("**Liens manquants**")
+            cols_missing = st.columns(len(doc_cols))
+            for col_container, col_name in zip(cols_missing, doc_cols):
+                col_container.metric(col_name.title(), int(df[col_name].isna().sum()))
+
+        affichage_cols = doc_cols + [c for c in revision_cols if c not in doc_cols]
+        if affichage_cols:
+            st.markdown("**Matrice documentaire**")
+            column_config = {}
+            for col_name in doc_cols:
+                column_config[col_name] = st.column_config.TextColumn(col_name.title())
+            for col_name in revision_cols:
+                column_config[col_name] = st.column_config.DateColumn(col_name.title(), format="DD/MM/YYYY")
+
+            matrice_style = _style_doc_matrix(df, doc_cols, revision_cols, REVISION_STALENESS_DAYS)
+            st.dataframe(
+                matrice_style,
+                use_container_width=True,
+                column_config=column_config,
+            )
 
 # Séries mensuelles
 ajout_m = stats_mensuelles(df, m, year, "date_ajout")      # Mois, Ajouts, Libellé

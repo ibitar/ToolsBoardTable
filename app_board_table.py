@@ -321,6 +321,11 @@ df = st.session_state["df"]
 m = st.session_state["mapping"]
 st.success("Données chargées ✅")
 
+# Colonnes clés utilisées dans plusieurs sections de l'application
+logiciel_col = m.get("logiciel")
+doc_cols = [col for col in DOC_STATUS_COLUMNS if col in df.columns]
+version_col = find_column_by_keywords(df, ["version", "logiciel"])
+
 # Choix de l'année (auto-remplie depuis les colonnes dates)
 years = set()
 for key in ("date_ajout","date_debut","date_fin"):
@@ -461,9 +466,6 @@ with tab_rapport:
 st.divider()
 
 # Suivi documentaire
-doc_cols = [col for col in DOC_STATUS_COLUMNS if col in df.columns]
-logiciel_col = m.get("logiciel")
-version_col = find_column_by_keywords(df, ["version", "logiciel"])
 base_doc_cols = [col for col in [logiciel_col, version_col] if col]
 
 with st.expander("Suivi documentaire"):

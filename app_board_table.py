@@ -153,40 +153,20 @@ def doc_status_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(lignes)
 
 
-def _style_doc_matrix(df: pd.DataFrame, doc_cols: List[str], revision_cols: List[str], delai_jours: int):
-    if not doc_cols and not revision_cols:
+def _style_doc_matrix(df: pd.DataFrame, display_cols: List[str], doc_cols: List[str]):
+    """Prépare un Styler pour la matrice documentaire en surlignant les statuts manquants."""
+    if not display_cols:
         return df
 
-    matrice = df[doc_cols + revision_cols].copy()
-
-    for col in revision_cols:
-        matrice[col] = pd.to_datetime(matrice[col], errors="coerce")
-
+    matrice = df[display_cols].copy()
     styler = matrice.style
 
-    if doc_cols:
+    doc_cols_present = [col for col in doc_cols if col in matrice.columns]
+    if doc_cols_present:
         styler = styler.applymap(
             lambda val: f"background-color: {STATUS_EMPTY_COLOR}" if pd.isna(val) or str(val).strip() == "" else "",
-            subset=doc_cols,
+            subset=doc_cols_present,
         )
-
-    if revision_cols:
-        seuil = pd.Timestamp.now() - pd.Timedelta(days=delai_jours)
-        styler = styler.format(
-            {
-                col: (lambda v: v.strftime("%d/%m/%Y") if pd.notna(v) else "")
-                for col in revision_cols
-            }
-        )
-
-        def _couleur_revision(val):
-            if pd.isna(val):
-                return f"background-color: {STATUS_EMPTY_COLOR}"
-            if val < seuil:
-                return f"background-color: {REVISION_STALE_COLOR}"
-            return ""
-
-        styler = styler.applymap(_couleur_revision, subset=revision_cols)
 
     return styler
 
@@ -197,6 +177,36 @@ def _normalize_text(text: str) -> str:
         return ""
     normalized = unicodedata.normalize("NFKD", str(text))
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower().strip()
+
+
+def find_column_by_keywords(df: pd.DataFrame, keywords: List[str]) -> Optional[str]:
+    """Retourne la première colonne dont le libellé contient tous les mots-clés normalisés."""
+    normalized_keywords = [_normalize_text(keyword) for keyword in keywords]
+    for col in df.columns:
+        norm = _normalize_text(col)
+        if all(keyword in norm for keyword in normalized_keywords):
+            return col
+    return None
+
+
+def _format_unique_values(series: pd.Series, max_items: int = 5) -> str:
+    """Met en forme les valeurs uniques d'une série pour affichage synthétique."""
+    if series is None:
+        return ""
+    values = (
+        series.dropna()
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+    )
+    if len(values) == 0:
+        return "Non renseigné"
+    values_list = list(values[:max_items])
+    if len(values) > max_items:
+        values_list.append("…")
+    return ", ".join(values_list)
 
 
 def stats_referent(df: pd.DataFrame) -> pd.DataFrame:
@@ -248,13 +258,23 @@ def stats_referent(df: pd.DataFrame) -> pd.DataFrame:
     stats = stats.sort_values("Dossiers ouverts", ascending=False).reset_index(drop=True)
     return stats
 
-def bar_plot(df: pd.DataFrame, x: str, y: str, title: str, ylim: Optional[Tuple[float, float]]=None):
+def bar_plot(
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    title: str,
+    ylim: Optional[Tuple[float, float]] = None,
+    total: Optional[int] = None,
+):
     """Trace un histogramme (Matplotlib) avec abscisses textuelles et y commun optionnel."""
     fig, ax = plt.subplots()
     ax.bar(df[x], df[y])
     ax.set_xlabel("Mois")
     ax.set_ylabel(y)
-    ax.set_title(title)
+    if total is not None:
+        ax.set_title(f"{title}\nTotal annuel : {total}")
+    else:
+        ax.set_title(title)
     if ylim is not None:
         ax.set_ylim(ylim)
     ax.grid(True, axis="y")
@@ -323,8 +343,8 @@ c2.metric("Démarrés", k["Démarrés"])
 c3.metric("Finis", k["Finis"])
 c4.metric("En cours (démarrés non finis)", k["En cours (démarrés non finis)"])
 
-# Répartition par logiciel / référent
-tab_logiciels, tab_referents = st.tabs(["Logiciels", "Référents"])
+# Répartition par logiciel / référent / rapport détaillé
+tab_logiciels, tab_referents, tab_rapport = st.tabs(["Logiciels", "Référents", "Rapport logiciel"])
 
 with tab_logiciels:
     st.subheader("Répartition par logiciel")
@@ -363,18 +383,91 @@ with tab_referents:
         chart_data = tab_ref.set_index("Référent")[["Dossiers ouverts"]]
         st.bar_chart(chart_data, height=400, use_container_width=True, horizontal=True)
 
+with tab_rapport:
+    st.subheader("Rapport détaillé par logiciel")
+    if logiciel_col is None:
+        st.info("Aucune colonne 'Logiciel' détectée dans les données.")
+    else:
+        options = (
+            df[logiciel_col]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .replace("", pd.NA)
+            .dropna()
+            .unique()
+        )
+        options = sorted(options)
+        if not options:
+            st.info("Aucun logiciel disponible pour le rapport.")
+        else:
+            selected_logiciel = st.selectbox("Choisir un logiciel", options)
+            selection = df[df[logiciel_col].astype(str).str.strip() == selected_logiciel]
+
+            if selection.empty:
+                st.info("Aucune ligne correspondante trouvée pour ce logiciel.")
+            else:
+                st.markdown(f"### {selected_logiciel}")
+
+                info_mapping = [
+                    ("Version", version_col),
+                    ("Dernière version du logiciel", find_column_by_keywords(df, ["derniere", "version", "logiciel"])),
+                    ("Logiciel rattaché à", find_column_by_keywords(df, ["rattache", "logiciel"])),
+                    ("Éditeur", find_column_by_keywords(df, ["editeur"])),
+                    ("Référent", find_column_by_keywords(df, ["referent"])),
+                    ("Ressources", find_column_by_keywords(df, ["ressources"])),
+                    ("Métier", find_column_by_keywords(df, ["metier"])),
+                    ("Type", find_column_by_keywords(df, ["type"])),
+                    ("Avancement", find_column_by_keywords(df, ["avancement"])),
+                    ("Jalon", find_column_by_keywords(df, ["jalon"])),
+                    ("État du PV de recettage", find_column_by_keywords(df, ["etat", "pv", "recettage"])),
+                    ("Date du dernier recettage", find_column_by_keywords(df, ["date", "dernier", "recettage"])),
+                    ("Machines recettées", find_column_by_keywords(df, ["machine", "recette"])),
+                    ("Confidentialité", find_column_by_keywords(df, ["confidentialite"])),
+                ]
+
+                info_rows = []
+                for label, col_name in info_mapping:
+                    if col_name and col_name in selection.columns:
+                        formatted = _format_unique_values(selection[col_name])
+                        if formatted and formatted != "Non renseigné":
+                            info_rows.append((label, formatted))
+
+                if info_rows:
+                    st.table(pd.DataFrame(info_rows, columns=["Champ", "Valeur"]))
+
+                if doc_cols:
+                    st.markdown("**Statuts documentaires**")
+                    doc_summary_rows = []
+                    for col_name in doc_cols:
+                        formatted = _format_unique_values(selection[col_name])
+                        doc_summary_rows.append((col_name.title(), formatted))
+                    st.table(pd.DataFrame(doc_summary_rows, columns=["Document", "État"]))
+
+                commentaire_col = find_column_by_keywords(df, ["commentaire"])
+                action_col = find_column_by_keywords(df, ["action", "faire"])
+                if commentaire_col or action_col:
+                    st.markdown("**Suivi des actions**")
+                    columns_to_keep = [col for col in [commentaire_col, action_col] if col]
+                    actions_df = selection[columns_to_keep].copy()
+                    rename_map = {}
+                    if commentaire_col:
+                        rename_map[commentaire_col] = "Commentaire / action"
+                    if action_col:
+                        rename_map[action_col] = "Action à faire"
+                    actions_df = actions_df.rename(columns=rename_map)
+                    st.dataframe(actions_df, use_container_width=True, hide_index=True)
+
 st.divider()
 
 # Suivi documentaire
 doc_cols = [col for col in DOC_STATUS_COLUMNS if col in df.columns]
-revision_cols = [
-    col
-    for col in df.columns
-    if col.startswith("derniere revision") or col.startswith("dernière revision")
-]
+logiciel_col = m.get("logiciel")
+version_col = find_column_by_keywords(df, ["version", "logiciel"])
+base_doc_cols = [col for col in [logiciel_col, version_col] if col]
 
 with st.expander("Suivi documentaire"):
-    if not doc_cols and not revision_cols:
+    if not doc_cols and not base_doc_cols:
         st.info("Aucune colonne documentaire détectée dans les données chargées.")
     else:
         synthese = doc_status_summary(df)
@@ -388,16 +481,15 @@ with st.expander("Suivi documentaire"):
             for col_container, col_name in zip(cols_missing, doc_cols):
                 col_container.metric(col_name.title(), int(df[col_name].isna().sum()))
 
-        affichage_cols = doc_cols + [c for c in revision_cols if c not in doc_cols]
+        affichage_cols = base_doc_cols + [c for c in doc_cols if c not in base_doc_cols]
         if affichage_cols:
             st.markdown("**Matrice documentaire**")
             column_config = {}
+            for col_name in base_doc_cols:
+                column_config[col_name] = st.column_config.TextColumn(col_name.title())
             for col_name in doc_cols:
                 column_config[col_name] = st.column_config.TextColumn(col_name.title())
-            for col_name in revision_cols:
-                column_config[col_name] = st.column_config.DateColumn(col_name.title(), format="DD/MM/YYYY")
-
-            matrice_style = _style_doc_matrix(df, doc_cols, revision_cols, REVISION_STALENESS_DAYS)
+            matrice_style = _style_doc_matrix(df, affichage_cols, doc_cols)
             st.dataframe(
                 matrice_style,
                 use_container_width=True,
@@ -418,17 +510,38 @@ col_a, col_b, col_c = st.columns(3)
 with col_a:
     st.markdown("**Ajouts par mois**")
     st.dataframe(ajout_m[["Mois","Libellé","Ajouts"]], use_container_width=True)
-    bar_plot(ajout_m.rename(columns={"Libellé":"Mois_txt"}), "Mois_txt", "Ajouts", f"Ajouts {year}", ylim=ylim)
+    bar_plot(
+        ajout_m.rename(columns={"Libellé": "Mois_txt"}),
+        "Mois_txt",
+        "Ajouts",
+        f"Ajouts {year}",
+        ylim=ylim,
+        total=int(ajout_m["Ajouts"].sum()),
+    )
 
 with col_b:
     st.markdown("**Démarrages par mois**")
     st.dataframe(debut_m[["Mois","Libellé","Démarrages"]], use_container_width=True)
-    bar_plot(debut_m.rename(columns={"Libellé":"Mois_txt"}), "Mois_txt", "Démarrages", f"Démarrages {year}", ylim=ylim)
+    bar_plot(
+        debut_m.rename(columns={"Libellé": "Mois_txt"}),
+        "Mois_txt",
+        "Démarrages",
+        f"Démarrages {year}",
+        ylim=ylim,
+        total=int(debut_m["Démarrages"].sum()),
+    )
 
 with col_c:
     st.markdown("**Fins par mois**")
     st.dataframe(fin_m[["Mois","Libellé","Fins"]], use_container_width=True)
-    bar_plot(fin_m.rename(columns={"Libellé":"Mois_txt"}), "Mois_txt", "Fins", f"Fins {year}", ylim=ylim)
+    bar_plot(
+        fin_m.rename(columns={"Libellé": "Mois_txt"}),
+        "Mois_txt",
+        "Fins",
+        f"Fins {year}",
+        ylim=ylim,
+        total=int(fin_m["Fins"].sum()),
+    )
 
 # Données brutes
 with st.expander("Données brutes (nettoyées)"):

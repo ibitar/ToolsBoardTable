@@ -340,8 +340,63 @@ with col_y1:
 with col_y2:
     st.caption(f"Colonnes détectées: {m}")
 
+# Détection des colonnes pour les filtres avancés
+referent_col = find_column_by_keywords(df, ["referent"])
+status_col = (
+    find_column_by_keywords(df, ["action", "faire"])
+    or find_column_by_keywords(df, ["avancement"])
+    or find_column_by_keywords(df, ["statut"])
+)
+
+df_filtered = df
+
+def _unique_clean_values(series: pd.Series) -> List[str]:
+    return sorted(
+        series.dropna()
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+    )
+
+with st.expander("Filtres avancés"):
+    selected_referents: List[str] = []
+    selected_status: List[str] = []
+
+    if referent_col:
+        referent_options = _unique_clean_values(df[referent_col])
+        selected_referents = st.multiselect(
+            "Filtrer par référent", referent_options, placeholder="Tous les référents"
+        )
+        if not referent_options:
+            st.caption("Aucun référent disponible dans les données.")
+    else:
+        st.caption("Colonne référent non détectée – filtre désactivé.")
+
+    if status_col:
+        status_options = _unique_clean_values(df[status_col])
+        selected_status = st.multiselect(
+            "Filtrer par statut", status_options, placeholder="Tous les statuts"
+        )
+        if not status_options:
+            st.caption("Aucun statut disponible dans les données.")
+    else:
+        st.caption("Colonne de statut non détectée – filtre désactivé.")
+
+if referent_col and selected_referents:
+    referent_series = df_filtered[referent_col].astype(str).str.strip()
+    df_filtered = df_filtered[referent_series.isin(selected_referents)]
+
+if status_col and selected_status:
+    status_series = df_filtered[status_col].astype(str).str.strip()
+    df_filtered = df_filtered[status_series.isin(selected_status)]
+
+if df_filtered.empty:
+    st.info("Les filtres sélectionnés ne renvoient aucune donnée. Les indicateurs afficheront 0.")
+
 # KPIs
-k = kpis_globaux(df, m, year)
+k = kpis_globaux(df_filtered, m, year)
 c1,c2,c3,c4 = st.columns(4)
 c1.metric("Ajoutés au fichier", k["Ajoutés au fichier"])
 c2.metric("Démarrés", k["Démarrés"])
@@ -353,7 +408,7 @@ tab_logiciels, tab_referents, tab_rapport = st.tabs(["Logiciels", "Référents",
 
 with tab_logiciels:
     st.subheader("Répartition par logiciel")
-    tab_logiciel = stats_par_logiciel(df, m, year)
+    tab_logiciel = stats_par_logiciel(df_filtered, m, year)
     st.dataframe(tab_logiciel, use_container_width=True)
     st.download_button(
         "⬇️ Export CSV – Répartition par logiciel",
@@ -364,7 +419,7 @@ with tab_logiciels:
 with tab_referents:
     st.subheader("Charge par référent")
     try:
-        tab_ref = stats_referent(df)
+        tab_ref = stats_referent(df_filtered)
     except ValueError as exc:
         st.info(str(exc))
         tab_ref = pd.DataFrame(columns=["Référent", "À faire", "En cours", "Dossiers ouverts"])
@@ -394,7 +449,7 @@ with tab_rapport:
         st.info("Aucune colonne 'Logiciel' détectée dans les données.")
     else:
         options = (
-            df[logiciel_col]
+            df_filtered[logiciel_col]
             .dropna()
             .astype(str)
             .str.strip()
@@ -407,7 +462,9 @@ with tab_rapport:
             st.info("Aucun logiciel disponible pour le rapport.")
         else:
             selected_logiciel = st.selectbox("Choisir un logiciel", options)
-            selection = df[df[logiciel_col].astype(str).str.strip() == selected_logiciel]
+            selection = df_filtered[
+                df_filtered[logiciel_col].astype(str).str.strip() == selected_logiciel
+            ]
 
             if selection.empty:
                 st.info("Aucune ligne correspondante trouvée pour ce logiciel.")
@@ -459,19 +516,19 @@ with tab_rapport:
 
                 info_mapping = [
                     ("Version", version_col),
-                    ("Dernière version du logiciel", find_column_by_keywords(df, ["derniere", "version", "logiciel"])),
-                    ("Logiciel rattaché à", find_column_by_keywords(df, ["rattache", "logiciel"])),
-                    ("Éditeur", find_column_by_keywords(df, ["editeur"])),
-                    ("Référent", find_column_by_keywords(df, ["referent"])),
-                    ("Ressources", find_column_by_keywords(df, ["ressources"])),
-                    ("Métier", find_column_by_keywords(df, ["metier"])),
-                    ("Type", find_column_by_keywords(df, ["type"])),
-                    ("Avancement", find_column_by_keywords(df, ["avancement"])),
-                    ("Jalon", find_column_by_keywords(df, ["jalon"])),
-                    ("État du PV de recettage", find_column_by_keywords(df, ["etat", "pv", "recettage"])),
-                    ("Date du dernier recettage", find_column_by_keywords(df, ["date", "dernier", "recettage"])),
-                    ("Machines recettées", find_column_by_keywords(df, ["machine", "recette"])),
-                    ("Confidentialité", find_column_by_keywords(df, ["confidentialite"])),
+                    ("Dernière version du logiciel", find_column_by_keywords(df_filtered, ["derniere", "version", "logiciel"])),
+                    ("Logiciel rattaché à", find_column_by_keywords(df_filtered, ["rattache", "logiciel"])),
+                    ("Éditeur", find_column_by_keywords(df_filtered, ["editeur"])),
+                    ("Référent", find_column_by_keywords(df_filtered, ["referent"])),
+                    ("Ressources", find_column_by_keywords(df_filtered, ["ressources"])),
+                    ("Métier", find_column_by_keywords(df_filtered, ["metier"])),
+                    ("Type", find_column_by_keywords(df_filtered, ["type"])),
+                    ("Avancement", find_column_by_keywords(df_filtered, ["avancement"])),
+                    ("Jalon", find_column_by_keywords(df_filtered, ["jalon"])),
+                    ("État du PV de recettage", find_column_by_keywords(df_filtered, ["etat", "pv", "recettage"])),
+                    ("Date du dernier recettage", find_column_by_keywords(df_filtered, ["date", "dernier", "recettage"])),
+                    ("Machines recettées", find_column_by_keywords(df_filtered, ["machine", "recette"])),
+                    ("Confidentialité", find_column_by_keywords(df_filtered, ["confidentialite"])),
                 ]
 
                 info_rows = []
@@ -492,8 +549,8 @@ with tab_rapport:
                         doc_summary_rows.append((col_name.title(), formatted))
                     st.table(pd.DataFrame(doc_summary_rows, columns=["Document", "État"]))
 
-                commentaire_col = find_column_by_keywords(df, ["commentaire"])
-                action_col = find_column_by_keywords(df, ["action", "faire"])
+                commentaire_col = find_column_by_keywords(df_filtered, ["commentaire"])
+                action_col = find_column_by_keywords(df_filtered, ["action", "faire"])
                 if commentaire_col or action_col:
                     st.markdown("**Suivi des actions**")
                     columns_to_keep = [col for col in [commentaire_col, action_col] if col]
@@ -542,9 +599,9 @@ with st.expander("Suivi documentaire"):
             )
 
 # Séries mensuelles
-ajout_m = stats_mensuelles(df, m, year, "date_ajout")      # Mois, Ajouts, Libellé
-debut_m = stats_mensuelles(df, m, year, "date_debut")      # Mois, Démarrages, Libellé
-fin_m   = stats_mensuelles(df, m, year, "date_fin")        # Mois, Fins, Libellé
+ajout_m = stats_mensuelles(df_filtered, m, year, "date_ajout")      # Mois, Ajouts, Libellé
+debut_m = stats_mensuelles(df_filtered, m, year, "date_debut")      # Mois, Démarrages, Libellé
+fin_m   = stats_mensuelles(df_filtered, m, year, "date_fin")        # Mois, Fins, Libellé
 
 # Échelle verticale uniforme (max global + marge 10 %)
 max_val = max(ajout_m["Ajouts"].max(), debut_m["Démarrages"].max(), fin_m["Fins"].max())
